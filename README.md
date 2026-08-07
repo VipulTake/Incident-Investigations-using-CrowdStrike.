@@ -1,58 +1,100 @@
 # Incident-Investigations-using-CrowdStrike.
-A collection of sanitized CrowdStrike Falcon incident investigation case studies demonstrating endpoint security analysis, threat hunting and incident response
------
-## Case 01 - Suspicious PowerShell Attempt to Modify Microsoft Defender
------
-### Objective
-Investigate a CrowdStrike Falcon detection where PowerShell attempted to modify Microsoft Defender Antivirus exclusions using the Add-MpPreference cmdlet.
+A collection of sanitized CrowdStrike Falcon incident investigation case studies demonstrating endpoint security analysis, threat hunting and incident response.
 
-Also determine whether the PowerShell execution represents:
+-----
 
-- Legitimate administrative activity
-- Security testing
-- Unauthorized modification of antivirus settings
-- Malware attempting to evade endpoint protection
+# Case 02 - Suspicious AppleScript Execution Leading to Potential Data Exfiltration
+
+-----
+## Objective
+
+Investigate a CrowdStrike Falcon detection involving a suspicious AppleScript application executed from a temporary directory that subsequently launched AppleScript, shell commands, created a ZIP archive, and attempted to upload data to an external domain.
+
+Also determine whether the observed activity represents:
+
+- Legitimate software installation or automation
+- Authorized AppleScript execution
+- Malware abusing macOS native utilities
+- Attempted data collection and exfiltration
+
 ------
+## Incident Summary
 
-### Incident Summary
-
-Detection Type  -  Defense Evasion
+Detection Type  -  Potential Data Exfiltration / Suspicious Process Execution
 
 Severity  -  High
 
-Operating System  -  Windows
+Operating System  -  macOS
 
-Process  -  powershell.exe
+Initial Process  -  applet
 
-Technique  -  Attempt to modify Microsoft Defender exclusions
+Technique  -  Execution of AppleScript followed by archive creation and outbound upload
 
 Detection Engine  -  CrowdStrike Falcon
 
-ATT&CK Tactic  -  Defense Evasion
+ATT&CK Tactics  -  Execution, Collection, Exfiltration
 
---------
-### Detection Description
-CrowdStrike Falcon generated a detection after identifying a PowerShell command attempting to modify Microsoft Defender Antivirus preferences by adding a Windows system directory to the antivirus exclusion list.
+Total Detections  -  864
 
-This behavior is frequently observed during malware execution, as attackers attempt to prevent antivirus software from scanning malicious files.
+------
+## Detection Description
 
------
+CrowdStrike Falcon detected the execution of an AppleScript application (`applet`) from a temporary directory instead of a trusted macOS application location.
 
-### Initial Alert Information
+The application subsequently launched `osascript`, executed shell commands, created a ZIP archive inside the `/tmp` directory, and attempted to upload the archive to an external Punycode (.ru) domain using the legitimate macOS utility `curl`.
 
-The Falcon console reported:
-
-Process  :  powershell.exe
-
-Observed Command  :   powershell.exe -Command "Add-MpPreference -ExclusionPath 'C:\Windows\System32'"
-
-Reason for Detection  :   Attempt to modify Microsoft Defender Antivirus exclusions.
+Although the individual utilities are legitimate macOS components, the complete sequence closely resembles malware behavior associated with data staging and exfiltration.
 
 ------
 
-### Investigation Methodology
+## Initial Alert Information
 
-#### Step 1 – Reviewed Detection Details
+The Falcon console reported:
+
+Host  :  XYZ
+
+Process  :  applet
+
+Process Path  :
+
+```
+/private/tmp/f.app/Contents/MacOS/applet
+```
+
+Child Processes:
+
+```
+applet
+    ↓
+osascript
+    ↓
+sh
+    ↓
+zip archive creation
+    ↓
+curl
+```
+
+Uploaded File:
+
+```
+/tmp/12736.zip
+```
+
+Destination URL:
+
+```
+https://xn--80aaaagbbb3tbcd.xn--p1ai/u
+```
+
+Reason for Detection:
+
+Potential malware execution chain resulting in possible data exfiltration.
+
+------
+## Investigation Methodology
+
+### Step 1 – Review Detection Details
 
 Verified:
 
@@ -60,154 +102,312 @@ Verified:
 - Detection severity
 - Timestamp
 - Endpoint operating system
+- Detection count
+- Executed process path
 
-----
+Observation:
 
-#### Step 2 – Reviewed Process Tree
+The application executed from:
 
-Objective:
+```
+/private/tmp/f.app/
+```
 
-Determine which application launched PowerShell.
+instead of the standard macOS application directories.
 
-Questions asked while analyzing:
+This execution path is uncommon for legitimate applications and frequently associated with malware.
 
--What was the parent process? -  svchost.exe  - svchost.exe directly spawned powershell.exe.
+-----
+### Step 2 – Review Process Tree
 
-- Was PowerShell launched by explorer.exe? - Unknown - he CrowdStrike detection does not include the process tree. This should be verified in the Falcon Process Tree.
+Observed execution chain:
 
-- Was the PowerShell command suspicious? - Yes - The command attempted to add C:\Windows\System32 to Microsoft Defender's exclusion list, which is a known defense evasion technique.
+```
+applet
+      │
+      ▼
+osascript
+      │
+      ▼
+sh
+      │
+      ▼
+ZIP Archive Creation
+      │
+      ▼
+curl
+```
 
-- Was there evidence of Microsoft Defender configuration modification?  -  Yes  -The command explicitly attempted to modify Defender preferences using Add-MpPreference.
+Questions asked during analysis:
 
-- Was additional malicious activity observed from the provided detection?  -No evidence available - The alert contains only the Defender modification attempt. Further investigation is required to identify persistence, payload execution, or lateral movement.
+- Was the application launched by the user? - Unknown - need to confirm with user whether it was executed manually or not -  User denied executing it manually.
+- Which process launched `applet`? -- initial process observed was 'applet'.
+- Was it executed from a trusted location? -- No – The application executed from: ``` /private/tmp/f.app/Contents/MacOS/applet  --  This is a temporary directory and not a standard location for trusted macOS applications, making the execution suspicious.
+- Did additional child processes execute? -- Yes – The detection shows that `applet` spawned `osascript`, which subsequently launched `sh`, followed by ZIP archive creation and execution of `curl` to upload the archive.
+- Was network communication established?  --  Yes – The `curl` utility attempted to communicate with an external domain:--  https://xn--80aaaagbbb3tbcd.xn--p1ai/u --   indicating outbound network activity.
+- Was any archive created? -- Yes – The investigation identified the creation of a ZIP archive:```/tmp/12736.zip ```  This archive appears to have been prepared before the outbound upload attempt.
+- Was data uploaded externally? -- Attempted – CrowdStrike detected an attempt to upload `/tmp/12736.zip` to an external Punycode (.ru) domain using `curl`. The available evidence confirms the upload attempt; however, Crowd strike terminated this process successfully.
 
-- Is this incident considered suspicious? - Yes - Modifying antivirus exclusions, especially for the System32 directory, is high-risk behavior and warrants investigation unless it is part of an approved administrative task.
+Observation:
 
----------
-#### Step 3 – Analyze Command Line
+The execution chain demonstrated multiple native macOS utilities executing sequentially, which significantly increased the overall risk.
 
-Observed command:
+-----
 
-powershell.exe -Command "Add-MpPreference -ExclusionPath 'C:\Windows\System32'"
+### Step 3 – Analyze Initial Process
+
+Observed Process:
+
+```
+applet
+```
+
+Observed Path:
+
+```
+/private/tmp/f.app/Contents/MacOS/applet
+```
 
 Analysis:
 
-The Add-MpPreference cmdlet modifies Microsoft Defender configuration.
+`applet` is the standard executable used by AppleScript applications.
 
-Adding exclusions to Windows system directories is uncommon for normal users and is frequently abused by malware to avoid antivirus scanning.
+However, legitimate applications are typically installed under:
+
+```
+/Applications
+/System/Applications
+```
+
+Execution from `/private/tmp` is unusual and should be investigated.
+
+Risk Level:
+
+Medium to High
+
+-----
+
+### Step 4 – Analyze AppleScript Execution
+
+Observed Process:
+
+```
+osascript
+```
+
+Analysis:
+
+`osascript` is a legitimate Apple utility used to execute AppleScript.
+
+CrowdStrike detected execution of an obfuscated AppleScript originating from the temporary directory.
+
+Attackers frequently abuse AppleScript to execute commands while blending into normal macOS activity.
 
 Risk Level:
 
 High
 
+------
 
-#### Step 4 – Assess Defense Evasion Activity
+### Step 5 – Analyze Shell Execution
 
-PowerShell attempted to execute:
+Observed Command:
 
-Add-MpPreference
+```
+sh -c echo $((RANDOM % 3 + 2))
+```
 
-Purpose:
+Analysis:
 
-Modify Defender Antivirus configuration.
+The command simply generates a random value between 2 and 4.
 
-Potential attacker objective:
+Although harmless by itself, malware commonly introduces random delays before executing subsequent actions to evade automated analysis.
 
-Prevent Defender from scanning malicious files stored within excluded directories.
+Risk Level:
 
+Medium
 
-------------
+------
 
-## Step 5 – Determine Business Context
+### Step 6 – Review Archive Creation
+
+Observed File:
+
+```
+/tmp/12736.zip
+```
+
+Analysis:
+
+The creation of temporary ZIP archives is a common technique used by malware to collect and stage files before transmission.
+
+Potential attacker objectives include:
+
+- Compress sensitive documents
+- Archive browser data
+- Package collected information
+- Prepare data for exfiltration
+
+Risk Level:
+
+High
+
+------
+
+### Step 7 – Review Outbound Network Activity
+
+Observed Process:
+
+```
+curl
+```
+
+Observed Upload:
+
+```
+/tmp/12736.zip
+```
+
+Destination:
+
+```
+https://xn--80aaaagbbb3tbcd.xn--p1ai/u
+```
+
+Analysis:
+
+`curl` is a legitimate command-line utility.
+
+However, using `curl` to upload a ZIP archive to an external Punycode (.ru) domain strongly resembles known malware exfiltration techniques.
+
+Risk Level:
+
+Critical
+
+------
+
+## Step 8 – Determine Business Context
 
 Questions asked:
 
-- Was this command executed by an administrator?
-- Was security software being configured?
-- Was this part of an approved maintenance activity?
-- Was penetration testing scheduled?
+- Did the user intentionally execute the AppleScript application?  - No - User Denied.
+- Was any software installation in progress? - No- User did not installed any process at that point of time.
+- Was the application downloaded from a trusted source? NO.
+- Was data intentionally transferred outside the organization? NO, as User and IT Team  confirmed they were not the one to transfer th data.
 
-If none of the above apply, the detection should be treated as suspicious.
+If none of the above apply, the activity should be treated as suspicious.
 
+------
 
-------------
-
-#### Risk Assessment
+## Risk Assessment
 
 Likelihood:
+
 High
 
 Impact:
-High
+
+Critical
 
 Reason:
 
-Attempting to disable or weaken antivirus protection significantly increases the likelihood of successful malware execution.
+The observed attack chain demonstrates execution, scripting, archive creation, and outbound file transfer to an external domain.
 
---------
-#### MITRE ATT&CK
+These behaviors collectively indicate a potential attempt to collect and exfiltrate sensitive information.
 
-T1562.001
+------
 
-Impair Defenses:
-Disable or Modify Security Tools
+## MITRE ATT&CK
 
--------
+T1059.002
 
-#### Recommended Response
+Command and Scripting Interpreter:
+AppleScript
 
-Immediate actions:
+T1059.004
 
-- Validate whether the activity was authorized.
-- Review the process tree.
-- Investigate the parent process.
-- Review recent endpoint detections.
-- Search for related PowerShell executions.
-- Check for persistence mechanisms.
+Command and Scripting Interpreter:
+Unix Shell
+
+T1560
+
+Archive Collected Data
+
+T1567
+
+Exfiltration Over Web Service
+
+T1105
+
+Ingress Tool Transfer / File Transfer
+
+------
+
+## Recommended Response
+
+Immediate actions to be taken:
+
+- Determine whether the AppleScript execution was authorized. 
+- Review the complete process tree in CrowdStrike Falcon. 
+- Validate the parent process.
+- Inspect the AppleScript content if available.
+- Review the ZIP archive contents.
+- Investigate outbound network connections.
+- Verify whether the upload completed successfully.
+- Search for persistence mechanisms.
 - Isolate the endpoint if malicious activity is confirmed.
+- Remove malicious files.
+- Reset affected user credentials if sensitive information may have been exposed.
 
----
+------
 
-#### Lessons Learned
+## Lessons Learned
 
-PowerShell is a legitimate administration tool but is frequently abused by attackers.
+Legitimate macOS utilities such as `applet`, `osascript`, `sh`, and `curl` can be abused by attackers.
 
-Modification of Microsoft Defender exclusions should always be investigated.
+Execution from temporary directories should always be validated.
 
-Parent-child process relationships provide valuable context during incident investigations.
+Data staging through ZIP archive creation is a common precursor to data exfiltration.
+
+Reviewing the complete process chain provides significantly more context than analyzing individual detections.
 
 Business context is essential before determining whether activity is malicious.
 
----
+------
 
-#### Analyst Conclusion
+## Analyst Conclusion
 
-The PowerShell command attempted to modify Microsoft Defender exclusions using Add-MpPreference.
+CrowdStrike detected a suspicious execution chain beginning with an AppleScript application executed from a temporary directory.
 
-This behavior is consistent with Defense Evasion techniques commonly used by malware.
+The application subsequently launched AppleScript, executed shell commands, created a ZIP archive, and attempted to upload the archive to an external Punycode domain using `curl`.
 
-No additional evidence was available within this case study to confirm malicious execution.
+Although the individual processes are legitimate macOS components, the complete sequence closely aligns with techniques commonly used for malware execution and data exfiltration.
 
-Based on the available information, the activity should be treated as suspicious until validated against approved administrative activity.
+Based on the available evidence, the activity should be treated as suspicious.
 
---------
-#### Skills Demonstrated
+------
+
+## Skills Demonstrated
 
 - CrowdStrike Falcon Investigation
+- macOS Threat Analysis
 - Endpoint Detection and Response (EDR)
 - Incident Investigation
 - Threat Hunting
-- PowerShell Analysis
+- AppleScript Analysis
+- Process Tree Analysis
+- Data Exfiltration Investigation
 - MITRE ATT&CK Mapping
-- Defense Evasion Detection
 - Security Operations
 
-- ---------
+- ------
 
-#### Limitations
+## Limitations
 
-This case study is based on a sanitized scenario.
+This case study is based on a sanitized investigation.
 
-No production logs or customer data are included.
+No production customer data has been included.
 
-Some investigative steps require additional endpoint telemetry that is intentionally omitted.
+The complete process tree, network packet captures, and endpoint forensic artifacts were not available.
+
+Additional investigation would be required to conclusively determine whether data exfiltration was successful or prevented.
